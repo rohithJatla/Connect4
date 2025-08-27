@@ -44,4 +44,6 @@ next-env.d.ts
 !.vscode/tasks.json
 .idea/*
 
-
+__pycache__/
+*.pyc
+**/__pycache__/

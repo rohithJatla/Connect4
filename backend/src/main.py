@@ -2,17 +2,20 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from .connect4.settings import settings
+
 from .api.views import router as api_router
-from .db.utils import get_mongodb
+from .db.utils import get_mongodb_client
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    mongodb = get_mongodb()
-    app.mongodb = mongodb
+    client = get_mongodb_client()
+    db = client.get_database(settings.MONGO_DB_DB)
+    app.mongodb = db
 
     yield
-    app.mongodb.close()
+    client.mongodb.close()
 
 
 app = FastAPI(lifespan=lifespan)

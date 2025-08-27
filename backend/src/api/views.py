@@ -12,7 +12,8 @@ async def start_new_game(player_data: StartGame) -> Game:
 
     client = MongoDBClient()
     insert_result = await client.insert(Game, data)
-    result = await client.get(Game, insert_result.inserted_id)
+    gamedata = await client.get(Game, insert_result.inserted_id)
+    result = Game(**gamedata)
 
     return result
 
