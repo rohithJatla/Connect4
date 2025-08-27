@@ -20,10 +20,9 @@ export interface GameData {
     board: number[][];
     moves: MoveData[];
     winner: number | null;
-    next_player_to_move_username: string;
+    next_player_to_move_username: string | null;
     finished_at: string | null;
 }
-
 
 export default function PlayGame({ params }: { params: { id: string } }) {
     const [data, setData] = useState<GameData | null>(null);
@@ -34,34 +33,64 @@ export default function PlayGame({ params }: { params: { id: string } }) {
 
     useEffect(() => {
         const ws = new WebSocket(`${BACKEND_WS_BASE_URL}/games/ws/${params.id}/`);
+        
         ws.addEventListener("open", () => {
+            console.log("WebSocket connected");
             fetch(`${BACKEND_API_BASE_URL}/games/${params.id}/`)
                 .then((response) => {
-                    if (!response.ok) throw new Error();
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                     return response.json();
                 })
                 .then((data) => {
+                    console.log("Initial game data:", data);
                     setData(data);
                     setLoading(false);
                 })
                 .catch((err) => {
-                    console.log("Something went wrong", err);
+                    console.error("Error fetching game data:", err);
+                    setLoading(false);
                 });
         });
+
         ws.addEventListener("message", (event) => {
-            const data = JSON.parse(JSON.parse(event.data));
-            setData(data);
+            try {
+                console.log("Raw WebSocket message:", event.data);
+                const parsedData = JSON.parse(event.data);
+                // Handle potential double JSON encoding
+                const gameData = typeof parsedData === 'string' ? JSON.parse(parsedData) : parsedData;
+                console.log("Processed game data:", gameData);
+                setData(gameData);
+            } catch (error) {
+                console.error("Error parsing WebSocket message:", error);
+            }
         });
+
+        ws.addEventListener("error", (error) => {
+            console.error("WebSocket error:", error);
+        });
+
+        ws.addEventListener("close", (event) => {
+            console.log("WebSocket closed:", event.code, event.reason);
+        });
+
         setWs(ws);
 
-        // clean up WS connection when the component is unmounted
+        // Clean up WebSocket connection when the component is unmounted
         return () => {
             ws.close();
         };
-    }, []);
+    }, [params.id]);
 
-    if (isLoading) return <div className="text-black">loading...</div>;
-    if (!data || !playerName) return <div className="text-black">no data</div>;
+    if (isLoading) return <div className="text-black">Loading...</div>;
+    if (!data) {
+        console.log("No game data available");
+        return <div className="text-black">No game data available</div>;
+    }
+    if (!playerName) {
+        console.log("No player name found for game ID:", params.id);
+        console.log("Available localStorage keys:", Object.keys(localStorage));
+        return <div className="text-black">No player name found. Please rejoin the game.</div>;
+    }
     if (!data.player2) return <WaitingPlayerToJoin id={params.id} />;
 
     return (
@@ -126,7 +155,7 @@ function WaitingPlayerToJoin({ id }: { id: string }) {
                     <span
                         className={`
                             absolute left-1/2 transform -translate-x-1/2 top-14
-                            rounded-md bg-cyan-500 text-slate-100 dark:bg-blue-500 dark:text-blue-100 px-2 py-1Ω
+                            rounded-md bg-cyan-500 text-slate-100 dark:bg-blue-500 dark:text-blue-100 px-2 py-1
                             text-xs transition-opacity duration-500
                             ${isCopied ? "opacity-100" : "opacity-0"}
                         `}
@@ -139,61 +168,65 @@ function WaitingPlayerToJoin({ id }: { id: string }) {
     );
 }
 
-function GameInfo({ gameData, setGameData, playerName, }: { gameData: GameData, setGameData: Dispatch<SetStateAction<GameData | null>>; playerName: string; }) {
+function GameInfo({ 
+    gameData, 
+    setGameData, 
+    playerName 
+}: { 
+    gameData: GameData; 
+    setGameData: Dispatch<SetStateAction<GameData | null>>; 
+    playerName: string; 
+}) {
     const [replayInProgress, setReplayInProgress] = useState(false);
 
     const handleReplayGame = () => {
-        if (replayInProgress || !gameData.moves) {
-            return;
+        // Simply redirect to home page
+        window.location.href = "http://localhost:3000/";
+    };
+
+    // Helper function to determine next player
+    const getNextPlayer = () => {
+        // Always prioritize the backend's next_player_to_move_username if available
+        if (gameData.next_player_to_move_username) {
+            return gameData.next_player_to_move_username;
         }
-        setReplayInProgress(true);
-
-        // init empty 6x7 board
-        const N = 6;
-        const M = 7;
-        let newBoard = Array.from({ length: N }, () => Array(M).fill(0));
-        const finalBoard = gameData.board;
-
-        // set empty
-        setGameData({ ...gameData, board: newBoard, move_number: 0 });
-
-        // update board move by move
-        setTimeout(() => {
-            gameData.moves.forEach((move: MoveData, i: number) => {
-                setTimeout(() => {
-                    setGameData((prevState: GameData | null) => {
-                        if (!prevState) return prevState;
-
-                        newBoard[move.row][move.col] = move.val;
-                        if (i == gameData.moves.length - 1) {
-                            setReplayInProgress(false);
-                            return { ...prevState, board: finalBoard, move_number: i + 1 };
-                        }
-                        return { ...prevState, board: newBoard, move_number: i + 1 };
-                    });
-                }, i * 500);
-            });
-        }, 500);
+        
+        // Fallback logic: Count actual moves made on the board
+        let moveCount = 0;
+        for (let row of gameData.board) {
+            for (let cell of row) {
+                if (cell !== 0) {
+                    moveCount++;
+                }
+            }
+        }
+        
+        // Even number of moves = player1's turn, odd = player2's turn
+        return moveCount % 2 === 0 ? gameData.player1 : gameData.player2;
     };
 
     let gameStatus = "";
     let humanFinishedAt = null;
+    
     if (gameData.finished_at) {
         humanFinishedAt = new Date(gameData.finished_at).toLocaleString();
         if (!gameData.winner) {
-            gameStatus += "It's a draw";
+            gameStatus = "It's a draw";
         } else if (
-            (gameData.winner == 1 && gameData.player1 == playerName) ||
-            (gameData.winner == 2 && gameData.player2 == playerName)
+            (gameData.winner === 1 && gameData.player1 === playerName) ||
+            (gameData.winner === 2 && gameData.player2 === playerName)
         ) {
-            gameStatus += "You won!";
+            gameStatus = "You won!";
         } else {
-            gameStatus += "You lost!"
+            gameStatus = "You lost!";
         }
-    } else if (gameData.next_player_to_move_username == playerName) {
-        gameStatus = "It's your turn";
     } else {
-        gameStatus = `It's ${gameData.next_player_to_move_username}'s turn`;
+        const nextPlayer = getNextPlayer();
+        if (nextPlayer === playerName) {
+            gameStatus = "It's your turn";
+        } else {
+            gameStatus = `It's ${nextPlayer}'s turn`;
+        }
     }
 
     return (
@@ -222,12 +255,12 @@ function GameInfo({ gameData, setGameData, playerName, }: { gameData: GameData, 
                 <span className="text-yellow-400 dark:text-blue-500 drop-shadow-2xl"> {gameData.player2}</span>
             </p>
             <p>{gameStatus}</p>
-            {humanFinishedAt && <p> Game finished at {humanFinishedAt}</p>}
-            {(!humanFinishedAt || replayInProgress) && <p> Move #{gameData.move_number} </p>}
+            {humanFinishedAt && <p>Game finished at {humanFinishedAt}</p>}
+            {(!humanFinishedAt || replayInProgress) && <p>Move #{gameData.move_number}</p>}
             {humanFinishedAt && (
                 <div className="mx-auto mt-2 w-1/2 sm:w-1/3">
                     <PetProjectButton
-                        label="Replay Game"
+                        label="New Game"
                         onClickHandler={handleReplayGame}
                     />
                 </div>
@@ -236,25 +269,65 @@ function GameInfo({ gameData, setGameData, playerName, }: { gameData: GameData, 
     );
 }
 
-function GameBoard({gameData, playerName, ws}: {gameData: GameData; playerName: string; ws: WebSocket | null}) {
-    const [highlightedColumn, setHighlightedColumn] = useState<number | null>(
-        null,
-    );
+function GameBoard({
+    gameData, 
+    playerName, 
+    ws
+}: {
+    gameData: GameData; 
+    playerName: string; 
+    ws: WebSocket | null;
+}) {
+    const [highlightedColumn, setHighlightedColumn] = useState<number | null>(null);
+
+    // Helper function to determine next player
+    const getNextPlayer = () => {
+        // Always prioritize the backend's next_player_to_move_username if available
+        if (gameData.next_player_to_move_username) {
+            return gameData.next_player_to_move_username;
+        }
+        
+        // Fallback logic: Count actual moves made on the board
+        let moveCount = 0;
+        for (let row of gameData.board) {
+            for (let cell of row) {
+                if (cell !== 0) {
+                    moveCount++;
+                }
+            }
+        }
+        
+        // Even number of moves = player1's turn, odd = player2's turn
+        return moveCount % 2 === 0 ? gameData.player1 : gameData.player2;
+    };
+
+    const nextPlayer = getNextPlayer();
+    const isMyTurn = nextPlayer === playerName && !gameData.finished_at;
 
     const handleColumnHover = (colIndex: number) => {
-        setHighlightedColumn(colIndex);
+        // Only allow hover effects if it's the current player's turn
+        if (isMyTurn) {
+            setHighlightedColumn(colIndex);
+        }
     };
+
     const handleColumnLeave = () => {
         setHighlightedColumn(null);
     };
 
     const handleCellClick = (i: number, j: number) => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
+        // Only allow clicks if it's the player's turn
+        if (isMyTurn && ws && ws.readyState === WebSocket.OPEN) {
             const payload = {
                 player: playerName,
                 col: j,
             };
+            console.log("Sending move:", payload);
             ws.send(JSON.stringify(payload));
+        } else if (!isMyTurn) {
+            console.log("Not your turn!");
+        } else {
+            console.error("WebSocket not connected");
         }
     };
 
@@ -289,6 +362,7 @@ function GameBoard({gameData, playerName, ws}: {gameData: GameData; playerName: 
                                     highlightedColumn={highlightedColumn}
                                     handleColumnHover={handleColumnHover}
                                     handleColumnLeave={handleColumnLeave}
+                                    isMyTurn={isMyTurn}
                                 />
                             ))}
                         </tr>
@@ -309,6 +383,7 @@ function GameBoardCell({
     highlightedColumn,
     handleColumnHover,
     handleColumnLeave,
+    isMyTurn,
 }: {
     rowIndex: number;
     colIndex: number;
@@ -319,14 +394,27 @@ function GameBoardCell({
     highlightedColumn: number | null;
     handleColumnHover: (colIndex: number) => void;
     handleColumnLeave: () => void;
+    isMyTurn: boolean;
 }) {
-    // highlight cell logic
+    // Highlight cell logic - only highlight if it's actually this player's turn
+    // and only for the bottom-most empty cell in the column
     let toHighlight = false;
-    if (gameData.board[rowIndex][colIndex] == 0 && !gameData.finished_at &&
-        gameData.next_player_to_move_username == playerName &&
+    
+    if (cellValue === 0 && 
+        !gameData.finished_at &&
+        isMyTurn &&
         highlightedColumn === colIndex
     ) {
-        toHighlight = true;
+        // Check if this is the bottom-most empty cell in this column
+        // (Connect 4 pieces fall to the bottom)
+        let isBottomMostEmpty = true;
+        for (let r = rowIndex + 1; r < gameData.board.length; r++) {
+            if (gameData.board[r][colIndex] === 0) {
+                isBottomMostEmpty = false;
+                break;
+            }
+        }
+        toHighlight = isBottomMostEmpty;
     }
 
     return (
@@ -343,14 +431,14 @@ function GameBoardCell({
                         ? "bg-red-400 dark:bg-purple-500"
                         : cellValue === 2
                             ? "bg-yellow-300 dark:bg-blue-600"
-                            : cellValue == 3
+                            : cellValue === 3
                                 ? "bg-green-400 dark:bg-green-600"
                                 : ""
                     }
                     ${toHighlight ? "bg-cyan-500 dark:bg-slate-800" : "cursor-default"}
                 `}
                 onClick={() => handleCellClick(rowIndex, colIndex)}
-            ></button>
+            />
         </td>
     );
 }
